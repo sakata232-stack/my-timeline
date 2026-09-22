@@ -771,7 +771,7 @@
       max="4"
       value="2"
       aria-label="タイムラインの表示期間"
-      step="1"
+      step="any"
     >
 
     <div class="zoom-labels">
@@ -931,6 +931,36 @@
     // View state only; stored events and TO DO dates remain unchanged.
     let timelineStart = todayAtNoon().getTime();
     let timelineFrame = null;
+    let displayDays = daysForZoom(Number(zoom.value));
+
+    // Interpolate logarithmically between the existing slider landmarks.
+    function daysForZoom(value) {
+      const position = Math.max(0, Math.min(4, value));
+      const index = Math.min(3, Math.floor(position));
+      const low = ranges[index].days;
+      const high = ranges[index + 1].days;
+      return low * Math.exp(Math.log(high / low) * (position - index));
+    }
+
+    function zoomForDays(days) {
+      const bounded = Math.max(1, Math.min(ranges[4].days, days));
+      const index = Math.min(3, ranges.findIndex(range => range.days >= bounded) - 1);
+      const lower = Math.max(0, index);
+      return lower + Math.log(bounded / ranges[lower].days) /
+        Math.log(ranges[lower + 1].days / ranges[lower].days);
+    }
+
+    function durationLabel(days) {
+      if (days < 30) return `${Math.max(1, Math.round(days))}日間`;
+      if (days < 365) return `${Number((days / (365 / 12)).toFixed(1))}か月`;
+      return `${Number((days / 365).toFixed(1))}年間`;
+    }
+
+    function timelineFraction(clientX) {
+      const rect = timeline.getBoundingClientRect();
+      const x = Number.isFinite(clientX) ? clientX : rect.left + rect.width / 2;
+      return (x - rect.left - rect.width * 0.05) / Math.max(1, rect.width * 0.9);
+    }
 
     function requestTimelineDraw() {
       if (timelineFrame !== null) return;
@@ -1694,8 +1724,7 @@
     }
 
     function renderTimeline() {
-      const selectedRange =
-        ranges[Number(zoom.value)];
+      const selectedRange = { days: displayDays };
 
       const startDate = new Date(timelineStart);
       const endDate = new Date(timelineStart + selectedRange.days * DAY);
@@ -1705,10 +1734,8 @@
           selectedRange
         );
 
-      rangeText.textContent =
-        dateToText(startDate) === dateToText(todayAtNoon())
-          ? selectedRange.label
-          : ["1日間", "1か月", "1年間", "10年間", "30年間"][Number(zoom.value)];
+      rangeText.textContent = durationLabel(displayDays);
+      zoom.setAttribute("aria-valuetext", durationLabel(displayDays));
 
       axisStart.textContent =
         formatDate(startDate);
@@ -2115,6 +2142,7 @@
         } else {
           zoom.value = 4;
         }
+        displayDays = daysForZoom(Number(zoom.value));
 
         eventForm.reset();
 
@@ -2130,23 +2158,27 @@
 
     zoom.addEventListener("input", () => {
       resetTimelineGesture();
-      requestTimelineDraw();
+      changeZoom(daysForZoom(Number(zoom.value)));
     });
 
-    function changeZoom(newValue) {
-      const value = Math.max(0, Math.min(4, newValue));
-      if (Number(zoom.value) === value) return;
-      zoom.value = value;
+    function changeZoom(days, fraction = 0.5,
+                        anchorDate = timelineStart + fraction * displayDays * DAY) {
+      if (!Number.isFinite(days) || !Number.isFinite(anchorDate)) return;
+      displayDays = Math.max(1, Math.min(ranges[4].days, days));
+      timelineStart = anchorDate - fraction * displayDays * DAY;
+      zoom.value = zoomForDays(displayDays);
       requestTimelineDraw();
     }
 
     const fingers = new Map();
     let dragStart = null;
     let startingDistance = 0;
-    let startingZoom = 2;
-    let gestureStartZoom = 2;
+    let startingZoom = displayDays;
+    let pinchAnchorDate = timelineStart;
+    let gestureStartZoom = displayDays;
+    let gestureAnchorDate = timelineStart;
+    let gestureFraction = 0.5;
     let nativeGesture = false;
-    let wheelAmount = 0;
 
     function resetTimelineGesture() {
       const capturedIds = [...fingers.keys()];
@@ -2165,6 +2197,17 @@
       return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
     }
 
+    function pinchFraction() {
+      const points = Array.from(fingers.values());
+      return timelineFraction((points[0].x + points[1].x) / 2);
+    }
+
+    function startPinch() {
+      startingDistance = getDistance();
+      startingZoom = displayDays;
+      pinchAnchorDate = timelineStart + pinchFraction() * displayDays * DAY;
+    }
+
     timeline.addEventListener("pointerdown", event => {
       if (event.target.closest("button") ||
           (event.pointerType === "mouse" && event.button !== 0)) return;
@@ -2174,7 +2217,7 @@
         dragStart = {
           x: event.clientX,
           date: timelineStart,
-          days: ranges[Number(zoom.value)].days,
+          days: displayDays,
           // Event positions occupy 5–95% of the timeline width.
           width: Math.max(1, timeline.getBoundingClientRect().width * 0.9)
         };
@@ -2182,8 +2225,7 @@
         dragStart = null;
         timeline.classList.remove("dragging");
         if (fingers.size === 2) {
-          startingDistance = getDistance();
-          startingZoom = Number(zoom.value);
+          startPinch();
         }
       }
     });
@@ -2194,7 +2236,8 @@
       if (fingers.size === 2 && startingDistance > 0) {
         const scale = getDistance() / startingDistance;
         if (scale > 0) {
-          changeZoom(Math.round(startingZoom - Math.log(scale) / Math.log(1.4)));
+          changeZoom(Math.exp(Math.log(startingZoom) - Math.log(scale)),
+            pinchFraction(), pinchAnchorDate);
         }
       } else if (fingers.size === 1 && dragStart && !nativeGesture) {
         const distance = event.clientX - dragStart.x;
@@ -2214,8 +2257,7 @@
         timeline.releasePointerCapture(event.pointerId);
       }
       if (fingers.size === 2) {
-        startingDistance = getDistance();
-        startingZoom = Number(zoom.value);
+        startPinch();
       }
     }
 
@@ -2231,13 +2273,16 @@
       nativeGesture = true;
       dragStart = null;
       timeline.classList.remove("dragging");
-      gestureStartZoom = Number(zoom.value);
+      gestureStartZoom = displayDays;
+      gestureFraction = timelineFraction(event.clientX);
+      gestureAnchorDate = timelineStart + gestureFraction * displayDays * DAY;
     }, { passive: false });
 
     timeline.addEventListener("gesturechange", event => {
       event.preventDefault();
-      if (fingers.size >= 2 || event.scale <= 0) return;
-      changeZoom(Math.round(gestureStartZoom - Math.log(event.scale) / Math.log(1.4)));
+      if (fingers.size > 0 || event.scale <= 0) return;
+      changeZoom(Math.exp(Math.log(gestureStartZoom) - Math.log(event.scale)),
+        gestureFraction, gestureAnchorDate);
     }, { passive: false });
 
     timeline.addEventListener("gestureend", event => {
@@ -2250,11 +2295,10 @@
       event.preventDefault();
       if (nativeGesture || fingers.size >= 2) return;
       dragStart = null;
-      wheelAmount += event.deltaY;
-      if (Math.abs(wheelAmount) > 35) {
-        changeZoom(Number(zoom.value) + (wheelAmount > 0 ? 1 : -1));
-        wheelAmount = 0;
-      }
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? timeline.clientHeight : 1);
+      const logDays = Math.max(0, Math.min(Math.log(ranges[4].days),
+        Math.log(displayDays) + pixels * 0.005));
+      changeZoom(Math.exp(logDays), timelineFraction(event.clientX));
     }, { passive: false });
 
     document.getElementById("returnTodayButton").addEventListener("click", () => {
