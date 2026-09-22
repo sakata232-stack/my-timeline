@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>My Timeline</title>
 
   <style>
@@ -463,14 +463,84 @@
       text-align: center;
     }
 
+    body { padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+    [hidden] { display: none !important; }
+    button, .backup-button, .weekday { min-height: 44px; }
+    .weekday { min-width: 44px; }
+    button:focus-visible, input:focus-visible, select:focus-visible,
+    .weekday:has(input:focus-visible) { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .bottom-tabs {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 18px calc(10px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .tab-button {
+      flex: 1;
+      max-width: 300px;
+      min-height: 48px;
+      border: 0;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .tab-button[aria-selected="true"] { background: #eaf3ff; color: var(--blue); }
+    .screen-title { margin: 0 0 16px; font-size: 22px; }
+    .todo-section { margin-bottom: 20px; }
+    .todo-section h3 { margin: 0 0 10px; font-size: 17px; }
+    .todo-section h3 span { margin-left: 8px; color: var(--muted); font-size: 13px; }
+    .todo-section.overdue h3 { color: #c42b25; }
+    .todo-list { list-style: none; margin: 0; padding: 0; }
+    .todo-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      margin-bottom: 8px;
+      border: 1px solid #e8e8ed;
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .todo-toggle {
+      flex: 0 0 44px;
+      width: 44px;
+      height: 44px;
+      border: 2px solid var(--green);
+      border-radius: 50%;
+      color: #167b30;
+      background: white;
+      font-size: 22px;
+    }
+    .todo-row.completed .todo-toggle { background: var(--green); color: white; }
+    .todo-row.completed .todo-title { text-decoration: line-through; color: var(--muted); }
+    .todo-content { flex: 1; min-width: 0; }
+    .todo-title { font-weight: 600; overflow-wrap: anywhere; }
+    .todo-meta, .todo-empty, .todo-help { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .todo-meta { margin-top: 4px; }
+    .todo-delete { flex-shrink: 0; border: 0; border-radius: 8px; background: var(--background); color: #666; padding: 8px; }
+    .add-button { flex-shrink: 0; }
+
     @media (max-width: 650px) {
       body {
-        padding: 18px;
+        padding: 18px 14px calc(100px + env(safe-area-inset-bottom));
       }
 
       .header {
         align-items: flex-start;
+        gap: 10px;
       }
+
+      h1 { font-size: 26px; }
+      .todo-count { font-size: 13px; }
+      .add-button { padding: 12px 14px; }
 
       .form-grid,
       .repeat-options {
@@ -675,6 +745,14 @@
       </form>
     </section>
 
+    <section id="todayScreen" role="tabpanel" aria-labelledby="todayTab">
+      <h2 class="screen-title">今日</h2>
+      <p class="todo-help">繰り返しには未完了分と次回分を表示します。チェックで日付ごとに完了を切り替えられます。</p>
+      <div id="todoLists"></div>
+    </section>
+
+    <section id="timelineScreen" role="tabpanel" aria-labelledby="timelineTab" hidden>
+    <h2 class="screen-title">タイムライン</h2>
     <div class="range" id="rangeText">
       今後1年間
     </div>
@@ -685,6 +763,7 @@
       min="0"
       max="4"
       value="2"
+      aria-label="タイムラインの表示期間"
       step="1"
     >
 
@@ -700,7 +779,6 @@
       <span class="schedule">予定</span>
       <span class="milestone">節目</span>
       <span class="goal">目標</span>
-      <span class="todo">TO DO</span>
     </div>
 
     <section class="timeline" id="timeline">
@@ -714,10 +792,17 @@
       白い部分でピンチすると、時間の範囲が変わります
     </div>
 
+    </section>
+
     <div class="storage-note">
       登録内容と完了履歴は、このブラウザ内に保存されます
     </div>
   </main>
+
+  <nav class="bottom-tabs" role="tablist" aria-label="画面切り替え">
+    <button class="tab-button" id="todayTab" type="button" role="tab" aria-selected="true" aria-controls="todayScreen">今日</button>
+    <button class="tab-button" id="timelineTab" type="button" role="tab" aria-selected="false" aria-controls="timelineScreen" tabindex="-1">タイムライン</button>
+  </nav>
 
   <script>
     const DAY = 24 * 60 * 60 * 1000;
@@ -830,6 +915,36 @@
     const backupStatus =
       document.getElementById("backupStatus");
 
+    const todayScreen = document.getElementById("todayScreen");
+    const timelineScreen = document.getElementById("timelineScreen");
+    const todoLists = document.getElementById("todoLists");
+    const todayTab = document.getElementById("todayTab");
+    const timelineTab = document.getElementById("timelineTab");
+    let activeScreen = "today";
+
+    function selectScreen(screen) {
+      activeScreen = screen;
+      const isToday = screen === "today";
+      todayScreen.hidden = !isToday;
+      timelineScreen.hidden = isToday;
+      todayTab.setAttribute("aria-selected", String(isToday));
+      timelineTab.setAttribute("aria-selected", String(!isToday));
+      todayTab.tabIndex = isToday ? 0 : -1;
+      timelineTab.tabIndex = isToday ? -1 : 0;
+      drawTimeline();
+    }
+
+    [todayTab, timelineTab].forEach((tab, index) => {
+      tab.addEventListener("click", () => selectScreen(index === 0 ? "today" : "timeline"));
+      tab.addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+        selectScreen(next === 0 ? "today" : "timeline");
+        [todayTab, timelineTab][next].focus();
+      });
+    });
+
     function makeId() {
       if (crypto.randomUUID) {
         return crypto.randomUUID();
@@ -928,49 +1043,29 @@
       return "";
     }
 
-    function createInitialEvents() {
-      const today = todayAtNoon();
-
-      return [
-        {
-          id: makeId(),
-          title: "今日の予定",
-          date: dateToText(today),
-          type: "schedule"
-        },
-        {
-          id: makeId(),
-          title: "今月の予定",
-          date: dateToText(
-            addDays(today, 14)
-          ),
-          type: "milestone"
-        },
-        {
-          id: makeId(),
-          title: "1年後の目標",
-          date: dateToText(
-            addDays(today, 300)
-          ),
-          type: "milestone"
-        },
-        {
-          id: makeId(),
-          title: "6年後の目標",
-          date: dateToText(
-            addDays(today, 365 * 6)
-          ),
-          type: "goal"
-        },
-        {
-          id: makeId(),
-          title: "長期目標",
-          date: dateToText(
-            addDays(today, 365 * 12)
-          ),
-          type: "goal"
-        }
+    function removeInitialSamples(items) {
+      // Old samples had no marker. Match the complete original set and date
+      // offsets so a user-created item with the same title is not removed alone.
+      const samples = [
+        ["今日の予定", "schedule", 0],
+        ["今月の予定", "milestone", 14],
+        ["1年後の目標", "milestone", 300],
+        ["6年後の目標", "goal", 365 * 6],
+        ["長期目標", "goal", 365 * 12]
       ];
+      const removed = new Set();
+      items.filter(item => item.title === samples[0][0] && item.type === "schedule")
+        .forEach(first => {
+          const start = dateFromText(first.date);
+          if (Number.isNaN(start.getTime())) return;
+          const matches = samples.map(([title, type, offset]) => items.find(item =>
+            !removed.has(item) && item.title === title && item.type === type &&
+            item.date === dateToText(addDays(start, offset)) &&
+            item.recurrence.type === "none" && item.completedDates.length === 0
+          ));
+          if (matches.every(Boolean)) matches.forEach(item => removed.add(item));
+        });
+      return items.filter(item => !removed.has(item));
     }
 
     function normalizeItem(item) {
@@ -994,9 +1089,13 @@
 
       if (saved) {
         try {
-          return JSON
-            .parse(saved)
-            .map(normalizeItem);
+          const items = JSON.parse(saved).map(normalizeItem);
+          const cleaned = removeInitialSamples(items);
+          if (cleaned.length !== items.length) {
+            localStorage.setItem(BACKUP_KEY, saved);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+          }
+          return cleaned;
         } catch (error) {
           console.warn(
             "保存データを読み込めませんでした",
@@ -1005,9 +1104,7 @@
         }
       }
 
-      const initialEvents =
-        createInitialEvents()
-          .map(normalizeItem);
+      const initialEvents = [];
 
       localStorage.setItem(
         STORAGE_KEY,
@@ -1381,46 +1478,7 @@
       const output = [];
 
       timelineEvents.forEach(item => {
-        const repeat =
-          item.type === "todo" &&
-          item.recurrence.type !== "none";
-
-        if (
-          repeat &&
-          selectedRange.days <= 31
-        ) {
-          output.push(
-            ...generateOccurrences(
-              item,
-              today,
-              endDate
-            )
-          );
-
-          return;
-        }
-
-        if (repeat) {
-          const start =
-            dateFromText(item.date);
-
-          if (start <= endDate) {
-            output.push({
-              ...item,
-
-              occurrenceDate:
-                dateToText(
-                  start < today
-                    ? today
-                    : start
-                ),
-
-              isSummary: true
-            });
-          }
-
-          return;
-        }
+        if (!["schedule", "milestone", "goal"].includes(item.type)) return;
 
         const itemDate =
           dateFromText(item.date);
@@ -1518,6 +1576,104 @@
         `今日の未完了TO DO：${count}件`;
     }
 
+    function todoGroups() {
+      const today = todayAtNoon();
+      const todayText = dateToText(today);
+      const groups = { overdue: [], today: [], upcoming: [], repeating: [], completed: [] };
+      timelineEvents.filter(item => item.type === "todo").forEach(item => {
+        if (item.recurrence.type === "none") {
+          const entry = { ...item, occurrenceDate: item.date };
+          const group = isCompleted(entry) ? "completed"
+            : item.date < todayText ? "overdue"
+            : item.date === todayText ? "today" : "upcoming";
+          groups[group].push(entry);
+          return;
+        }
+        const start = dateFromText(item.date);
+        const begin = start > today ? start : today;
+        const occurrences = generateOccurrences(item, start, addDays(begin, 62));
+        let nextIncluded = false;
+        occurrences.forEach(entry => {
+          if (isCompleted(entry)) return;
+          if (entry.occurrenceDate <= todayText) {
+            groups.repeating.push(entry);
+          } else if (!nextIncluded) {
+            groups.repeating.push(entry);
+            nextIncluded = true;
+          }
+        });
+        // Preserve all date-specific completion history, including future completions.
+        [...new Set(item.completedDates)].forEach(date => {
+          groups.completed.push({ ...item, occurrenceDate: date });
+        });
+      });
+      Object.entries(groups).forEach(([key, entries]) => {
+        entries.sort((a, b) => key === "completed"
+          ? b.occurrenceDate.localeCompare(a.occurrenceDate)
+          : a.occurrenceDate.localeCompare(b.occurrenceDate));
+      });
+      return groups;
+    }
+
+    function drawToday() {
+      const labels = { overdue: "期限超過", today: "今日", upcoming: "今後", repeating: "繰り返し", completed: "完了済み" };
+      const todayText = dateToText(todayAtNoon());
+      todoLists.replaceChildren();
+      Object.entries(todoGroups()).forEach(([key, entries]) => {
+        const section = document.createElement("section");
+        section.className = `todo-section ${key}`;
+        const heading = document.createElement("h3");
+        heading.textContent = labels[key];
+        const count = document.createElement("span");
+        count.textContent = `${entries.length}件`;
+        heading.appendChild(count);
+        section.appendChild(heading);
+        const list = document.createElement("ul");
+        list.className = "todo-list";
+        entries.forEach(item => {
+          const completed = isCompleted(item);
+          const row = document.createElement("li");
+          row.className = `todo-row${completed ? " completed" : ""}`;
+          const toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "todo-toggle";
+          toggle.dataset.action = "complete";
+          toggle.dataset.id = item.id;
+          toggle.dataset.date = item.occurrenceDate;
+          toggle.setAttribute("aria-pressed", String(completed));
+          toggle.setAttribute("aria-label", `${item.title}（${item.occurrenceDate}）を${completed ? "未完了" : "完了"}にする`);
+          toggle.textContent = completed ? "✓" : "";
+          const content = document.createElement("div");
+          content.className = "todo-content";
+          const title = document.createElement("div");
+          title.className = "todo-title";
+          title.textContent = item.title;
+          const meta = document.createElement("div");
+          meta.className = "todo-meta";
+          const due = item.occurrenceDate < todayText ? "期限超過" : item.occurrenceDate === todayText ? "今日" : "今後";
+          meta.textContent = [formatDate(dateFromText(item.occurrenceDate)), recurrenceLabel(item), completed ? "完了" : due].filter(Boolean).join(" · ");
+          content.append(title, meta);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "todo-delete";
+          remove.dataset.action = "delete";
+          remove.dataset.id = item.id;
+          remove.textContent = "削除";
+          remove.setAttribute("aria-label", `${item.title}を削除`);
+          row.append(toggle, content, remove);
+          list.appendChild(row);
+        });
+        section.appendChild(list);
+        if (!entries.length) {
+          const empty = document.createElement("p");
+          empty.className = "todo-empty";
+          empty.textContent = "該当するTO DOはありません";
+          section.appendChild(empty);
+        }
+        todoLists.appendChild(section);
+      });
+    }
+
     function drawTimeline() {
       const selectedRange =
         ranges[Number(zoom.value)];
@@ -1546,6 +1702,7 @@
         formatDate(endDate);
 
       updateTodayCount();
+      drawToday();
 
       if (
         visibleEvents.length === 0
@@ -1679,9 +1836,7 @@
           .join("");
     }
 
-    eventsArea.addEventListener(
-      "click",
-      event => {
+    function handleItemAction(event) {
         const button =
           event.target.closest(
             "button[data-action]"
@@ -1770,8 +1925,10 @@
           saveEvents();
           drawTimeline();
         }
-      }
-    );
+    }
+
+    eventsArea.addEventListener("click", handleItemAction);
+    todoLists.addEventListener("click", handleItemAction);
 
     function updateRepeatControls() {
       repeatBox.classList.toggle(
@@ -1803,6 +1960,7 @@
     openFormButton.addEventListener(
       "click",
       () => {
+        eventType.value = activeScreen === "today" ? "todo" : "schedule";
         formPanel.classList.add("open");
 
         const today =
