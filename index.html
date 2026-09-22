@@ -297,9 +297,15 @@
       background: var(--surface);
       border-radius: 20px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+      cursor: grab;
       touch-action: none;
       user-select: none;
     }
+
+    .timeline.dragging { cursor: grabbing; }
+    .timeline-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .timeline-toolbar .range { margin: 0; }
+    #returnTodayButton { flex-shrink: 0; }
 
     .timeline-line {
       position: absolute;
@@ -753,8 +759,9 @@
 
     <section id="timelineScreen" role="tabpanel" aria-labelledby="timelineTab" hidden>
     <h2 class="screen-title">タイムライン</h2>
-    <div class="range" id="rangeText">
-      今後1年間
+    <div class="timeline-toolbar">
+      <div class="range" id="rangeText">今後1年間</div>
+      <button class="backup-button" id="returnTodayButton" type="button">今日へ戻る</button>
     </div>
 
     <input
@@ -789,7 +796,7 @@
     </section>
 
     <div class="hint">
-      白い部分でピンチすると、時間の範囲が変わります
+      左右にドラッグして過去・未来へ移動。2本指でピンチすると表示期間が変わります
     </div>
 
     </section>
@@ -921,8 +928,20 @@
     const todayTab = document.getElementById("todayTab");
     const timelineTab = document.getElementById("timelineTab");
     let activeScreen = "today";
+    // View state only; stored events and TO DO dates remain unchanged.
+    let timelineStart = todayAtNoon().getTime();
+    let timelineFrame = null;
+
+    function requestTimelineDraw() {
+      if (timelineFrame !== null) return;
+      timelineFrame = requestAnimationFrame(() => {
+        timelineFrame = null;
+        renderTimeline();
+      });
+    }
 
     function selectScreen(screen) {
+      resetTimelineGesture();
       activeScreen = screen;
       const isToday = screen === "today";
       todayScreen.hidden = !isToday;
@@ -1466,14 +1485,8 @@
     function visibleItemsForRange(
       selectedRange
     ) {
-      const today =
-        todayAtNoon();
-
-      const endDate =
-        addDays(
-          today,
-          selectedRange.days
-        );
+      const startDate = new Date(timelineStart);
+      const endDate = new Date(timelineStart + selectedRange.days * DAY);
 
       const output = [];
 
@@ -1484,7 +1497,7 @@
           dateFromText(item.date);
 
         if (
-          itemDate >= today &&
+          itemDate >= startDate &&
           itemDate <= endDate
         ) {
           output.push({
@@ -1675,17 +1688,17 @@
     }
 
     function drawTimeline() {
+      updateTodayCount();
+      drawToday();
+      renderTimeline();
+    }
+
+    function renderTimeline() {
       const selectedRange =
         ranges[Number(zoom.value)];
 
-      const today =
-        todayAtNoon();
-
-      const endDate =
-        addDays(
-          today,
-          selectedRange.days
-        );
+      const startDate = new Date(timelineStart);
+      const endDate = new Date(timelineStart + selectedRange.days * DAY);
 
       const visibleEvents =
         visibleItemsForRange(
@@ -1693,16 +1706,15 @@
         );
 
       rangeText.textContent =
-        selectedRange.label;
+        dateToText(startDate) === dateToText(todayAtNoon())
+          ? selectedRange.label
+          : ["1日間", "1か月", "1年間", "10年間", "30年間"][Number(zoom.value)];
 
       axisStart.textContent =
-        formatDate(today);
+        formatDate(startDate);
 
       axisEnd.textContent =
         formatDate(endDate);
-
-      updateTodayCount();
-      drawToday();
 
       if (
         visibleEvents.length === 0
@@ -1724,15 +1736,7 @@
                 item.occurrenceDate
               );
 
-            const difference =
-              Math.max(
-                0,
-
-                Math.round(
-                  (itemDate - today) /
-                  DAY
-                )
-              );
+            const difference = (itemDate.getTime() - timelineStart) / DAY;
 
             const percentage =
               Math.max(
@@ -2124,194 +2128,140 @@
       }
     );
 
-    zoom.addEventListener(
-      "input",
-      drawTimeline
-    );
+    zoom.addEventListener("input", () => {
+      resetTimelineGesture();
+      requestTimelineDraw();
+    });
 
     function changeZoom(newValue) {
-      zoom.value =
-        Math.max(
-          0,
-          Math.min(
-            4,
-            newValue
-          )
-        );
-
-      drawTimeline();
+      const value = Math.max(0, Math.min(4, newValue));
+      if (Number(zoom.value) === value) return;
+      zoom.value = value;
+      requestTimelineDraw();
     }
-
-    let gestureStartZoom = 2;
-
-    timeline.addEventListener(
-      "gesturestart",
-      event => {
-        event.preventDefault();
-
-        gestureStartZoom =
-          Number(zoom.value);
-      },
-      {
-        passive: false
-      }
-    );
-
-    timeline.addEventListener(
-      "gesturechange",
-      event => {
-        event.preventDefault();
-
-        const amount =
-          Math.log(event.scale) /
-          Math.log(1.4);
-
-        changeZoom(
-          Math.round(
-            gestureStartZoom -
-            amount
-          )
-        );
-      },
-      {
-        passive: false
-      }
-    );
-
-    let wheelAmount = 0;
-
-    timeline.addEventListener(
-      "wheel",
-      event => {
-        if (!event.ctrlKey) {
-          return;
-        }
-
-        event.preventDefault();
-
-        wheelAmount +=
-          event.deltaY;
-
-        if (wheelAmount > 35) {
-          changeZoom(
-            Number(zoom.value) + 1
-          );
-
-          wheelAmount = 0;
-        }
-
-        if (wheelAmount < -35) {
-          changeZoom(
-            Number(zoom.value) - 1
-          );
-
-          wheelAmount = 0;
-        }
-      },
-      {
-        passive: false
-      }
-    );
 
     const fingers = new Map();
-
+    let dragStart = null;
     let startingDistance = 0;
     let startingZoom = 2;
+    let gestureStartZoom = 2;
+    let nativeGesture = false;
+    let wheelAmount = 0;
+
+    function resetTimelineGesture() {
+      const capturedIds = [...fingers.keys()];
+      fingers.clear();
+      dragStart = null;
+      startingDistance = 0;
+      nativeGesture = false;
+      timeline.classList.remove("dragging");
+      capturedIds.forEach(id => {
+        if (timeline.hasPointerCapture(id)) timeline.releasePointerCapture(id);
+      });
+    }
 
     function getDistance() {
-      const points =
-        Array.from(
-          fingers.values()
-        );
-
-      return Math.hypot(
-        points[0].x -
-        points[1].x,
-
-        points[0].y -
-        points[1].y
-      );
+      const points = Array.from(fingers.values());
+      return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
     }
 
-    timeline.addEventListener(
-      "pointerdown",
-      event => {
-        fingers.set(
-          event.pointerId,
-          {
-            x: event.clientX,
-            y: event.clientY
-          }
-        );
-
-        if (
-          fingers.size === 2
-        ) {
-          startingDistance =
-            getDistance();
-
-          startingZoom =
-            Number(zoom.value);
+    timeline.addEventListener("pointerdown", event => {
+      if (event.target.closest("button") ||
+          (event.pointerType === "mouse" && event.button !== 0)) return;
+      timeline.setPointerCapture(event.pointerId);
+      fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (fingers.size === 1 && !nativeGesture) {
+        dragStart = {
+          x: event.clientX,
+          date: timelineStart,
+          days: ranges[Number(zoom.value)].days,
+          // Event positions occupy 5–95% of the timeline width.
+          width: Math.max(1, timeline.getBoundingClientRect().width * 0.9)
+        };
+      } else {
+        dragStart = null;
+        timeline.classList.remove("dragging");
+        if (fingers.size === 2) {
+          startingDistance = getDistance();
+          startingZoom = Number(zoom.value);
         }
       }
-    );
+    });
 
-    timeline.addEventListener(
-      "pointermove",
-      event => {
-        if (
-          !fingers.has(
-            event.pointerId
-          )
-        ) {
-          return;
+    timeline.addEventListener("pointermove", event => {
+      if (!fingers.has(event.pointerId)) return;
+      fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (fingers.size === 2 && startingDistance > 0) {
+        const scale = getDistance() / startingDistance;
+        if (scale > 0) {
+          changeZoom(Math.round(startingZoom - Math.log(scale) / Math.log(1.4)));
         }
-
-        fingers.set(
-          event.pointerId,
-          {
-            x: event.clientX,
-            y: event.clientY
-          }
-        );
-
-        if (
-          fingers.size === 2 &&
-          startingDistance > 0
-        ) {
-          const scale =
-            getDistance() /
-            startingDistance;
-
-          const amount =
-            Math.log(scale) /
-            Math.log(1.4);
-
-          changeZoom(
-            Math.round(
-              startingZoom -
-              amount
-            )
-          );
-        }
+      } else if (fingers.size === 1 && dragStart && !nativeGesture) {
+        const distance = event.clientX - dragStart.x;
+        timelineStart = dragStart.date - distance / dragStart.width * dragStart.days * DAY;
+        timeline.classList.add("dragging");
+        requestTimelineDraw();
       }
-    );
+    });
 
     function removeFinger(event) {
-      fingers.delete(
-        event.pointerId
-      );
+      if (!fingers.delete(event.pointerId)) return;
+      // After a pinch, require a fresh touch before starting another drag.
+      dragStart = null;
+      startingDistance = 0;
+      timeline.classList.remove("dragging");
+      if (timeline.hasPointerCapture(event.pointerId)) {
+        timeline.releasePointerCapture(event.pointerId);
+      }
+      if (fingers.size === 2) {
+        startingDistance = getDistance();
+        startingZoom = Number(zoom.value);
+      }
     }
 
-    timeline.addEventListener(
-      "pointerup",
-      removeFinger
-    );
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach(name => {
+      timeline.addEventListener(name, removeFinger);
+    });
+    window.addEventListener("blur", resetTimelineGesture);
 
-    timeline.addEventListener(
-      "pointercancel",
-      removeFinger
-    );
+    // Safari trackpad gestures remain supported. Touch pinch is handled by
+    // pointer events when two pointers are present, avoiding double zooming.
+    timeline.addEventListener("gesturestart", event => {
+      event.preventDefault();
+      nativeGesture = true;
+      dragStart = null;
+      timeline.classList.remove("dragging");
+      gestureStartZoom = Number(zoom.value);
+    }, { passive: false });
+
+    timeline.addEventListener("gesturechange", event => {
+      event.preventDefault();
+      if (fingers.size >= 2 || event.scale <= 0) return;
+      changeZoom(Math.round(gestureStartZoom - Math.log(event.scale) / Math.log(1.4)));
+    }, { passive: false });
+
+    timeline.addEventListener("gestureend", event => {
+      event.preventDefault();
+      nativeGesture = false;
+    }, { passive: false });
+
+    timeline.addEventListener("wheel", event => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      if (nativeGesture || fingers.size >= 2) return;
+      dragStart = null;
+      wheelAmount += event.deltaY;
+      if (Math.abs(wheelAmount) > 35) {
+        changeZoom(Number(zoom.value) + (wheelAmount > 0 ? 1 : -1));
+        wheelAmount = 0;
+      }
+    }, { passive: false });
+
+    document.getElementById("returnTodayButton").addEventListener("click", () => {
+      resetTimelineGesture();
+      timelineStart = todayAtNoon().getTime();
+      requestTimelineDraw();
+    });
 
     eventDate.min =
       dateToText(todayAtNoon());
